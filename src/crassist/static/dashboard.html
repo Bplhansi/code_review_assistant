@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Code quality - Review Assistant</title>
+<style>
+:root{--bg:#f2f4f6;--panel:#fff;--ink:#14212b;--mute:#5d6b78;--line:#d8dee4;--accent:#0b6e69;
+--high:#b42318;--medium:#c77700;--low:#3b6fb6;--info:#8a95a0;--code:#101a22;--codeink:#d6e2ea}
+@media (prefers-color-scheme:dark){:root{--bg:#0e151b;--panel:#16212a;--ink:#e6edf2;--mute:#8d9cab;--line:#27343f;
+--accent:#3fc1b8;--high:#f0786d;--medium:#e8a340;--low:#6f9fe0;--info:#7c8996;--code:#0a1218}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "Segoe UI",system-ui,-apple-system,sans-serif}
+main{max-width:1080px;margin:0 auto;padding:28px 20px 60px}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:15px;margin:0 0 12px}
+.sub{color:var(--mute);margin:0 0 24px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:18px;margin-bottom:16px}
+.hero{display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:16px}
+.score{font-size:76px;font-weight:700;line-height:1;letter-spacing:-2px;color:var(--accent)}
+.score small{font-size:20px;color:var(--mute);letter-spacing:0;font-weight:400}
+.kpis{display:grid;grid-template-columns:repeat(2,1fr);gap:14px 20px;margin-top:14px}
+.kpis b{display:block;font-size:20px}.kpis span{color:var(--mute);font-size:13px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+svg{width:100%;height:auto;display:block}
+.axis{stroke:var(--line);stroke-width:1}.lbl{fill:var(--mute);font-size:11px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{font-weight:600;text-align:left;color:var(--mute);padding:6px 8px;border-bottom:1px solid var(--line)}
+td{padding:8px;border-bottom:1px solid var(--line);vertical-align:top}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.sev{display:inline-block;width:4px;height:1em;margin-right:8px;vertical-align:-2px;border-radius:1px}
+.sev.high{background:var(--high)}.sev.medium{background:var(--medium)}.sev.low{background:var(--low)}.sev.info{background:var(--info)}
+.empty{color:var(--mute);padding:14px 0}
+textarea{width:100%;min-height:150px;background:var(--code);color:var(--codeink);border:1px solid var(--line);
+border-radius:4px;padding:10px;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;resize:vertical}
+button{background:var(--accent);color:#fff;border:0;border-radius:4px;padding:8px 14px;font:inherit;cursor:pointer}
+@media (prefers-color-scheme:dark){button{color:#06201e}}
+button:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.finding{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
+.finding code{color:var(--mute)}
+@media (max-width:760px){.hero,.grid2{grid-template-columns:1fr}.score{font-size:60px}}
+</style>
+</head>
+<body>
+<main>
+  <h1>Code quality</h1>
+  <p class="sub" id="sub">Loading review history…</p>
+
+  <section class="panel hero">
+    <div>
+      <div class="score"><span id="score">–</span><small> / 100</small></div>
+      <div class="sub" style="margin:4px 0 0">Average quality score</div>
+      <div class="kpis">
+        <div><b id="k-reviews">–</b><span>reviews</span></div>
+        <div><b id="k-high">–</b><span>high-severity findings</span></div>
+        <div><b id="k-cc">–</b><span>avg. complexity</span></div>
+        <div><b id="k-loc">–</b><span>lines reviewed</span></div>
+      </div>
+    </div>
+    <div><h2>Score by day</h2><div id="trend"></div></div>
+  </section>
+
+  <div class="grid2">
+    <section class="panel"><h2>Findings by severity</h2><div id="sev"></div></section>
+    <section class="panel"><h2>Most frequent rules</h2><div id="rules"></div></section>
+  </div>
+
+  <section class="panel"><h2>Recent reviews</h2><div id="reviews"></div></section>
+  <section class="panel"><h2>Files with the most findings</h2><div id="files"></div></section>
+
+  <section class="panel">
+    <h2>Check a snippet</h2>
+    <textarea id="code" spellcheck="false" aria-label="Python code to review">def add(item, bucket=[]):
+    try:
+        bucket.append(item)
+    except:
+        pass
+    return eval("bucket")</textarea>
+    <p><button id="run">Review snippet</button></p>
+    <div id="out"></div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const get = u => fetch(u).then(r => r.json());
+const SEV = ['high','medium','low','info'];
+const css = n => getComputedStyle(document.documentElement).getPropertyValue('--' + n).trim();
+
+function trendChart(rows){
+  if(!rows.length) return '<div class="empty">No reviews yet. Open a pull request or run <code>crassist review --db crassist.db .</code></div>';
+  const W=560,H=200,p={l:34,r:10,t:10,b:24};
+  const x=i=>p.l+(rows.length===1?(W-p.l-p.r)/2:i*(W-p.l-p.r)/(rows.length-1));
+  const y=v=>p.t+(100-v)/100*(H-p.t-p.b);
+  let g='';
+  [0,50,100].forEach(v=>g+=`<line class="axis" x1="${p.l}" x2="${W-p.r}" y1="${y(v)}" y2="${y(v)}"/><text class="lbl" x="${p.l-6}" y="${y(v)+4}" text-anchor="end">${v}</text>`);
+  // stepped line: each day's score holds until the next review day
+  let d=rows.map((r,i)=>(i?`H${x(i)}V${y(r.score)}`:`M${x(0)},${y(r.score)}`)).join('');
+  g+=`<path d="${d}" fill="none" stroke="${css('accent')}" stroke-width="2.5"/>`;
+  rows.forEach((r,i)=>g+=`<circle cx="${x(i)}" cy="${y(r.score)}" r="3" fill="${css('accent')}"><title>${r.day}: ${r.score} (${r.reviews} reviews)</title></circle>`);
+  g+=`<text class="lbl" x="${p.l}" y="${H-6}">${rows[0].day}</text><text class="lbl" x="${W-p.r}" y="${H-6}" text-anchor="end">${rows[rows.length-1].day}</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Average quality score per day">${g}</svg>`;
+}
+function sevBars(s){
+  const max=Math.max(1,...SEV.map(k=>s[k]));
+  return SEV.map(k=>`<div style="display:grid;grid-template-columns:70px 1fr 50px;gap:8px;align-items:center;margin:6px 0">
+    <span>${k}</span><div style="background:var(--bg);height:12px;border-radius:2px"><div style="width:${s[k]/max*100}%;height:100%;background:${css(k)};border-radius:2px"></div></div>
+    <span class="num" style="text-align:right">${s[k]}</span></div>`).join('');
+}
+const table=(cols,rows,empty)=>rows.length?`<div style="overflow-x:auto"><table><tr>${cols.map(c=>`<th class="${c.num?'num':''}">${c.h}</th>`).join('')}</tr>${
+  rows.map(r=>`<tr>${cols.map(c=>`<td class="${c.num?'num':''}">${c.f(r)}</td>`).join('')}</tr>`).join('')}</table></div>`:`<div class="empty">${empty}</div>`;
+
+async function load(){
+  const [s,t,r,rv,f]=await Promise.all(['summary','trend','rules','reviews','files'].map(n=>get('/api/'+n)));
+  $('sub').textContent=s.reviews?`${s.reviews} reviews, ${s.by_source.static||0} static and ${s.by_source.llm||0} LLM findings`:'No reviews recorded yet.';
+  $('score').textContent=s.avg_score??'–';
+  $('k-reviews').textContent=s.reviews;$('k-high').textContent=s.severity.high;
+  $('k-cc').textContent=s.avg_complexity??'–';$('k-loc').textContent=s.loc_reviewed.toLocaleString();
+  $('trend').innerHTML=trendChart(t);$('sev').innerHTML=sevBars(s.severity);
+  $('rules').innerHTML=table([{h:'Rule',f:x=>`<span class="sev ${x.severity}"></span>${esc(x.rule)}`},{h:'Count',num:1,f:x=>x.count}],r,'No findings yet.');
+  $('reviews').innerHTML=table([
+    {h:'Repository',f:x=>esc(x.repo)+(x.pr_number?` #${x.pr_number}`:'')},
+    {h:'Date',f:x=>esc(x.created_at.replace('T',' '))},
+    {h:'Score',num:1,f:x=>x.score},{h:'High',num:1,f:x=>x.high},{h:'Medium',num:1,f:x=>x.medium},{h:'Low',num:1,f:x=>x.low}],rv,'No reviews yet.');
+  $('files').innerHTML=table([{h:'File',f:x=>esc(x.path)},{h:'Findings',num:1,f:x=>x.n},{h:'High',num:1,f:x=>x.high}],f,'No findings yet.');
+}
+$('run').onclick=async()=>{
+  $('out').innerHTML='Reviewing…';
+  const res=await fetch('/api/review',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:$('code').value})});
+  if(!res.ok){$('out').innerHTML=`<div class="empty">Review failed (${res.status}).</div>`;return}
+  const d=await res.json();
+  $('out').innerHTML=`<p><b>Score ${d.score}/100</b>, ${d.findings.length} finding(s)</p>`+(d.findings.map(x=>
+    `<div class="finding"><span class="sev ${x.severity}" style="height:auto"></span><div><code>line ${x.line}</code> <b>${esc(x.rule)}</b><br>${esc(x.message)}${x.suggestion?`<br><i>${esc(x.suggestion)}</i>`:''}</div></div>`).join('')||'<div class="empty">No issues found.</div>');
+};
+load().catch(()=>{$('sub').textContent='Could not load metrics from the server.'});
+</script>
+</body>
+</html>
